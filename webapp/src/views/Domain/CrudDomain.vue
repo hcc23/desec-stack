@@ -1,0 +1,81 @@
+<script>
+import CrudList from '@/views/CrudList';
+
+export default {
+  name: 'CrudDomain',
+  extends: CrudList,
+  data: () => ({
+    createable: true,
+    updateable: false,
+    destroyable: true,
+    headlines: {
+      table: 'Record Sets',
+      create: 'Create New Record Set',
+      destroy: 'Delete Record Set',
+    },
+    texts: {
+      create: () => ('Create a record set'),
+      destroy: rrset => (`Delete record set ${rrset.type} ${rrset.subname}?`),
+      destroyInfo: () => ('This operation will permanently remove this information from the DNS.'),
+    },
+    columns: {
+      type: {
+        text: 'Type',
+        textCreate: 'Record Set Type',
+        align: 'left',
+        sortable: true,
+        value: 'type',
+        readonly: false,
+        datatype: 'RRSetType',
+        searchable: true,
+      },
+      subname: {
+        text: 'Subname',
+        align: 'left',
+        sortable: true,
+        value: 'subname',
+        readonly: true,
+        datatype: 'GenericText',
+        searchable: true,
+        writeOnCreate: true,
+      },
+      records: {
+        text: 'Content',
+        textCreate: 'Record Set Content',
+        align: 'left',
+        sortable: false,
+        value: 'records',
+        readonly: false,
+        datatype: 'RRSet',
+        fieldProps: rrSet => ({ type: rrSet.type || 'A' }),
+        searchable: true,
+      },
+      ttl: {
+        text: 'TTL',
+        align: 'right',
+        sortable: true,
+        value: 'ttl',
+        readonly: false,
+        datatype: 'GenericText', // TODO TTL is not a String
+        fieldProps: () => ({ type: 'number' }),
+        searchable: true,
+      },
+    },
+    actions: [
+    ],
+    paths: {
+      list: 'domains/::{name}/rrsets/', // TODO dangerous?
+      create: 'domains/::{name}/rrsets/',
+      delete: 'domains/::{name}/rrsets/:{subname}.../:{type}/',
+    },
+    itemDefaults: () => ({
+      type: 'A', subname: '', records: [''], ttl: 3600,
+    }),
+  }),
+};
+</script>
+
+<!-- Add "scoped" attribute to limit CSS to this component only -->
+<style scoped>
+
+</style>
