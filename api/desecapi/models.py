@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import binascii
 import json
 import logging
 import secrets
 import string
 import time
 import uuid
-from base64 import urlsafe_b64encode
 from datetime import timedelta
 from hashlib import sha256
 
+import dns
 import psl_dns
 import rest_framework.authtoken.models
 from django.conf import settings
@@ -23,13 +24,13 @@ from django.db.models import Manager, Q
 from django.template.loader import get_template
 from django.utils import timezone
 from django_prometheus.models import ExportModelOperationsMixin
+from dns import rdata, rdataclass, rdatatype
 from dns.exception import Timeout
 from dns.resolver import NoNameservers
 from rest_framework.exceptions import APIException
 
 from desecapi import metrics
 from desecapi import pdns
-
 
 logger = logging.getLogger(__name__)
 psl = psl_dns.PSL(resolver=settings.PSL_RESOLVER, timeout=.5)
@@ -358,6 +359,34 @@ class Donation(ExportModelOperationsMixin('Donation'), models.Model):
         managed = False
 
 
+# RR set types: the good, the bad, and the ugly
+# known, but unsupported types
+RR_SET_TYPES_UNSUPPORTED = {'ALIAS', 'DNAME'}
+# restricted types are managed in use by the API, and cannot directly be modified by the API client
+RR_SET_TYPES_AUTOMATIC = {
+    # automatically managed by the backend:
+    'CDNSKEY', 'CDS', 'DNSKEY', 'NSEC', 'NSEC3', 'OPT', 'RRSIG',
+    # automatically managed by the API:
+    'NSEC3PARAM', 'SOA'
+}
+# backend types are types that are the types supported by the backend(s)
+RR_SET_TYPES_BACKEND = pdns.SUPPORTED_RRSET_TYPES
+# validation types are types supported by the validation backend, currently: dnspython
+RR_SET_TYPES_VALIDATION = {
+    # from dns import rdatatype
+    # sorted(rdatatype._by_text.keys())
+    'A', 'A6', 'AAAA', 'AFSDB', 'ANY', 'APL', 'AVC', 'AXFR', 'CAA', 'CDNSKEY', 'CDS', 'CERT', 'CNAME', 'CSYNC',
+    'DHCID', 'DLV', 'DNAME', 'DNSKEY', 'DS', 'EUI48', 'EUI64', 'GPOS', 'HINFO', 'HIP', 'IPSECKEY', 'ISDN', 'IXFR',
+    'KEY', 'KX', 'LOC', 'MAILA', 'MAILB', 'MB', 'MD', 'MF', 'MG', 'MINFO', 'MR', 'MX', 'NAPTR', 'NONE', 'NS',
+    'NSAP', 'NSAP-PTR', 'NSEC', 'NSEC3', 'NSEC3PARAM', 'NULL', 'NXT', 'OPENPGPKEY', 'OPT', 'PTR', 'PX', 'RP',
+    'RRSIG', 'RT', 'SIG', 'SOA', 'SPF', 'SRV', 'SSHFP', 'TA', 'TKEY', 'TLSA', 'TSIG', 'TXT', 'UNSPEC', 'URI', 'WKS',
+    'X25'
+}
+# manageable types are directly managed by the API client
+RR_SET_TYPES_MANAGEABLE = \
+        (RR_SET_TYPES_BACKEND & RR_SET_TYPES_VALIDATION) - RR_SET_TYPES_UNSUPPORTED - RR_SET_TYPES_AUTOMATIC
+
+
 class RRsetManager(Manager):
     def create(self, contents=None, **kwargs):
         rrset = super().create(**kwargs)
@@ -399,9 +428,6 @@ class RRset(ExportModelOperationsMixin('RRset'), models.Model):
 
     objects = RRsetManager()
 
-    DEAD_TYPES = ('ALIAS', 'DNAME')
-    RESTRICTED_TYPES = ('SOA', 'RRSIG', 'DNSKEY', 'NSEC3PARAM', 'OPT')
-
     class Meta:
         unique_together = (("domain", "subname", "type"),)
 
@@ -417,6 +443,83 @@ class RRset(ExportModelOperationsMixin('RRset'), models.Model):
         self.updated = timezone.now()
         self.full_clean(validate_unique=False)
         super().save(*args, **kwargs)
+
+    def clean_records(self, records_presentation_format):
+        """
+        Validates the records belonging to this set. Validation rules follow the DNS specification; some types may
+        incur additional validation rules.
+
+        Raises ValidationError if violation of DNS specification is found.
+
+        Returns a set of records in canonical presentation format.
+
+        :param records_presentation_format: iterable of records in presentation format
+        """
+        rdtype = rdatatype.from_text(self.type)  # TODO may raise if type is unknown
+
+        def _error(record, msg):
+            raise ValidationError(f'Record content of {self.name}/{self.type} invalid: `{record}`: {msg}')
+
+        records_canonical_presentation_format = []
+        for r in records_presentation_format:
+            try:
+                records_canonical_presentation_format.append(RR.canonical_presentation_format(r, rdtype))
+            except binascii.Error:
+                # e.g., odd-length string
+                _error(r, 'Cannot parse hexadecimal or base64 record contents')
+            except dns.exception.SyntaxError as e:
+                # e.g., A/127.0.0.999
+                if e.args[0] == 'string too long':
+                    excess = len(r) - 255
+                    _error(r, f'Record content {excess} chars too long.')
+                _error(r, 'Record syntax malformed')
+            except dns.name.NeedAbsoluteNameOrOrigin:
+                _error(r, 'Hostname must be fully qualified (i.e., end in a dot: "example.com.")')
+            except ValueError:
+                # e.g., string ("asdf") cannot be parsed into int on base 10
+                _error(r, 'Cannot parse record contents')
+            except Exception as e:
+                # TODO see what exceptions raise here for faulty input
+                raise e
+
+        records_canonical_presentation_format = set(records_canonical_presentation_format)
+        if len(records_canonical_presentation_format) < len(records_presentation_format):
+            # Duplicate record content
+            raise ValidationError(f'Duplicate records in RR set {self.type}/{self.name}.')
+
+        return records_canonical_presentation_format
+
+    def save_records(self, records):
+        """
+        Updates this RR set's resource records, discarding any old values.
+
+        Records are expected in presentation format and are converted to canonical
+        presentation format (e.g., 127.00.0.1 will be converted to 127.0.0.1).
+        Raises if a invalid set of records is provided.
+
+        This method triggers the following database queries:
+        - two SELECT queries for comparison of old with new records
+        - for each removed record, one DELETE query
+        - if at least record was added, a total of one INSERT query
+
+        Changes are saved to the database immediately.
+
+        :param records: list of records in representation format
+        """
+        records = self.clean_records(records)
+
+        # Remove RRs that we didn't see in the new list
+        removed_rrs = self.records.exclude(content__in=records)  # one SELECT
+        for rr in removed_rrs:
+            rr.delete()  # one DELETE query
+
+        # Figure out which entries in records have not changed
+        unchanged_rrs = self.records.filter(content__in=records)  # one SELECT
+        unchanged_content = [unchanged_rr.content for unchanged_rr in unchanged_rrs]
+        added_content = filter(lambda c: c not in unchanged_content, records)
+
+        rrs = [RR(rrset=self, content=content) for content in added_content]
+        RR.objects.bulk_create(rrs)  # One INSERT
 
     def __str__(self):
         return '<RRSet %s domain=%s type=%s subname=%s>' % (self.pk, self.domain.name, self.type, self.subname)
@@ -450,6 +553,27 @@ class RR(ExportModelOperationsMixin('RR'), models.Model):
     content = models.CharField(max_length=500)  #
 
     objects = RRManager()
+
+    @staticmethod
+    def canonical_presentation_format(any_presentation_format, rdtype):
+        """
+        Converts any valid presentation format for a RR into it's canonical presentation format.
+        Raises if provided presentation format is invalid.
+        """
+        # TODO migrate database by applying this method to all RR contents
+        wire_format = rdata.from_text(
+            rdclass=rdataclass.IN,
+            rdtype=rdtype,
+            tok=any_presentation_format,
+            relativize=False
+        ).to_digestable()
+        return rdata.from_wire(
+            rdclass=rdataclass.IN,
+            rdtype=rdtype,
+            wire=wire_format,
+            current=0,
+            rdlen=len(wire_format)
+        ).to_text()
 
     def __str__(self):
         return '<RR %s %s rr_set=%s>' % (self.pk, self.content, self.rrset.pk)

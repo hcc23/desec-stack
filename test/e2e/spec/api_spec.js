@@ -480,8 +480,8 @@ describe("API v1", function () {
                             { subname: [ 'This field is required.' ] },
                             { ttl: [ 'This field is required.' ] },
                             { records: [ 'This field is required.' ] },
-                            { type: [ 'You cannot tinker with the SOA RRset.' ] },
-                            { type: [ 'You cannot tinker with the OPT RRset.' ] },
+                            { type: [ 'The SOA RRset(s) are managed by the API automatically.' ] },
+                            { type: [ 'The OPT RRset(s) are managed by the API automatically.' ] },
                             { type: [ 'Generic type format is not supported.' ] },
                         ]);
 

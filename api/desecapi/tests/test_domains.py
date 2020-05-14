@@ -296,12 +296,6 @@ class DomainOwnerTestCase1(DomainOwnerTestCase):
         self.assertStatus(response, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data['name'][0].code, 'name_unavailable')
 
-    def test_create_domain_atomicity(self):
-        name = self.random_domain_name()
-        with self.assertPdnsRequests(self.request_pdns_zone_create_422()):
-            self.client.post(self.reverse('v1:domain-list'), {'name': name})
-            self.assertFalse(Domain.objects.filter(name=name).exists())
-
     def test_create_domain_punycode(self):
         names = ['公司.cn', 'aéroport.ci']
         for name in names:
