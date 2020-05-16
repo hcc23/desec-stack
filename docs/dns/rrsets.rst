@@ -86,6 +86,12 @@ Field details:
     The maximum number of array elements is 4091, and the maximum length of
     the array is 64,000 (after JSON encoding).
 
+    Records must be given in presentation format (a.k.a. "BIND" or zone file
+    format). Record values that are not given in canonical format, such as
+    ``127.000.0.1`` will be converted by the API into canonical format, e.g.
+    ``127.0.0.1``. Exact validation rules on for the records depend on the
+    RRset type.
+
 ``subname``
     :Access mode: read, write-once (upon RRset creation)
 
