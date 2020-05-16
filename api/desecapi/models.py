@@ -470,8 +470,7 @@ class RRset(ExportModelOperationsMixin('RRset'), models.Model):
             except dns.exception.SyntaxError as e:
                 # e.g., A/127.0.0.999
                 if e.args[0] == 'string too long':
-                    excess = len(r) - 255
-                    _error(r, f'Record content {excess} chars too long.')
+                    _error(r, f'Splitting the data in chunks is required (RFC 4408).')
                 _error(r, 'Record syntax malformed')
             except dns.name.NeedAbsoluteNameOrOrigin:
                 _error(r, 'Hostname must be fully qualified (i.e., end in a dot: "example.com.")')

@@ -197,18 +197,49 @@ class AuthenticatedRRSetTestCase(AuthenticatedRRSetBaseTestCase):
         response = self.client.post_rr_set(self.other_domain.name, **data)
         self.assertStatus(response, status.HTTP_404_NOT_FOUND)
 
-    def test_create_my_rr_sets_too_long_content(self):
-        def _create_data(length):
-            content_string = 'A' * length
-            return {'records': [f'{content_string}'], 'ttl': 3600, 'type': 'TXT', 'subname': f'name{length}'}
+    def test_create_my_rr_sets_chunk_too_long(self):
+        def _create_data(record):
+            return {'records': [f'{record}'], 'ttl': 3600, 'type': 'TXT', 'subname': f'name{len(record)}'}
 
         with self.assertPdnsRequests(self.requests_desec_rr_sets_update(self.my_empty_domain.name)):
-            response = self.client.post_rr_set(self.my_empty_domain.name, **_create_data(255))
+            response = self.client.post_rr_set(
+                self.my_empty_domain.name,
+                # record of length 500 bytes in chunks of max 255 each (RFC 4408)
+                # "AAA...AAA" "AAA...AAA"
+                **_create_data('"' + 'A' * 255 + '"')
+            )
             self.assertStatus(response, status.HTTP_201_CREATED)
 
-        response = self.client.post_rr_set(self.my_empty_domain.name, **_create_data(256))
+        response = self.client.post_rr_set(
+            self.my_empty_domain.name,
+            # record of length 501 bytes in chunks of max 255 each (RFC 4408)
+            # "AAA...AAA" "AAA...AAA"
+            **_create_data('"' + 'A' * 256 + '"')
+        )
         self.assertStatus(response, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('Record content 1 chars too long', str(response.data))
+        self.assertIn('Splitting the data in chunks is required (RFC 4408).', str(response.data))
+
+    def test_create_my_rr_sets_too_long_content(self):
+        def _create_data(record):
+            return {'records': [f'{record}'], 'ttl': 3600, 'type': 'TXT', 'subname': f'name{len(record)}'}
+
+        with self.assertPdnsRequests(self.requests_desec_rr_sets_update(self.my_empty_domain.name)):
+            response = self.client.post_rr_set(
+                self.my_empty_domain.name,
+                # record of length 500 bytes in chunks of max 255 each (RFC 4408)
+                # "AAA...AAA" "AAA...AAA"
+                **_create_data('"' + 'A' * 255 + '" "' + 'A' * 240 + '"')
+            )
+            self.assertStatus(response, status.HTTP_201_CREATED)
+
+        response = self.client.post_rr_set(
+            self.my_empty_domain.name,
+            # record of length 501 bytes in chunks of max 255 each (RFC 4408)
+            # "AAA...AAA" "AAA...AAA"
+            **_create_data('"' + 'A' * 255 + '" "' + 'A' * 241 + '"')
+        )
+        self.assertStatus(response, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('Ensure this field has no more than 500 characters.', str(response.data))
 
     def test_create_my_rr_sets_too_large_rrset(self):
         network = IPv4Network('127.0.0.0/20')  # size: 4096 IP addresses
