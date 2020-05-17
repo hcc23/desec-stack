@@ -93,7 +93,16 @@ class PDNSChangeTracker:
                     'kind': 'MASTER',
                     'dnssec': True,
                     'nsec3param': '1 0 127 %s' % salt,
-                    'nameservers': settings.DEFAULT_NS
+                    'nameservers': settings.DEFAULT_NS,
+                    'rrsets': [{
+                        'name': self.domain_name_normalized,
+                        'type': 'SOA',
+                        'ttl': 300,
+                        'records': [{
+                            'content': 'set.an.example. get.desec.io. 1 1209600 1209600 2419200 3600',
+                            'disabled': False
+                        }],
+                    }],
                 }
             )
 
