@@ -24,7 +24,8 @@
       </v-alert>
       <v-card-text>
         <p>
-          To properly secure your domain with DNSSEC, please forward the following information to your domain registrar:
+          Please forward the following information to the administrator/registry of
+          <code>.{{name.split('.').slice(1).join('.')}}</code>:
         </p>
         <v-layout flex align-end>
           <div class="caption font-weight-medium">NS records</div>

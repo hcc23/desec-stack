@@ -26,7 +26,9 @@
             </p>
             <h2 class="title">Secure Your Domain</h2>
             <p>
-              To properly secure your domain with DNSSEC, please forward the following information to your domain registrar:</p>
+              Please forward the following information to the administrator/registry of
+              <code>.{{$route.params.domain.split('.').slice(1).join('.')}}</code>:
+            </p>
             <v-layout flex align-end>
               <div class="caption font-weight-medium">NS records</div>
               <v-spacer></v-spacer>
