@@ -282,6 +282,10 @@ class Domain(ExportModelOperationsMixin('Domain'), models.Model):
         if self.name == self.public_suffix and self.name not in settings.LOCAL_PUBLIC_SUFFIXES:
             return False
 
+        # Disallow _acme-challenge.dedyn.io and the like. Rejects direct children of public suffixes if prefixed by _
+        if self.name.count('.') == self.public_suffix.count('.') + 1 and self.name.startswith('_'):
+            return False
+
         # Domains covered by another user's zone can't be registered
         if self.is_covered_by_foreign_zone():
             return False
