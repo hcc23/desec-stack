@@ -200,7 +200,7 @@ class RRsetList(EmptyPayloadMixin, DomainViewMixin, generics.ListCreateAPIView, 
 
             if value is not None:
                 # TODO consider moving this
-                if filter_field == 'type' and value in models.RRset.RESTRICTED_TYPES:
+                if filter_field == 'type' and value in models.RR_SET_TYPES_AUTOMATIC:
                     raise PermissionDenied("You cannot tinker with the %s RRset." % value)
 
                 rrsets = rrsets.filter(**{'%s__exact' % filter_field: value})
@@ -578,8 +578,8 @@ class AuthenticatedActionView(generics.GenericAPIView):
     this class. If the `serializer.is_valid`, `act` is called on the action object.
     """
     action = None
-    authentication_classes = (auth.AuthenticatedActionAuthentication,)
-    html_url = None
+    authentication_classes = (auth.AuthenticatedBasicUserActionAuthentication,)
+    html_url = None  # Redirect GET requests to this webapp GUI URL
     http_method_names = ['get', 'post']  # GET is for redirect only
     renderer_classes = [JSONRenderer, StaticHTMLRenderer]
 
@@ -612,7 +612,10 @@ class AuthenticatedActionView(generics.GenericAPIView):
         try:
             self.action = serializer.Meta.model(**serializer.validated_data)
         except ValueError:  # this happens when state cannot be verified
-            raise ValidationError('Invalid code.')
+            ex = ValidationError('This action cannot be carried out because another operation has been performed, '
+                                 'invalidating this one. (Are you trying to perform this action twice?)')
+            ex.status_code = status.HTTP_409_CONFLICT
+            raise ex
 
         self.action.act()
         return self.finalize()
@@ -709,6 +712,14 @@ class AuthenticatedDeleteUserActionView(AuthenticatedActionView):
 
     def finalize(self):
         return Response({'detail': 'All your data has been deleted. Bye bye, see you soon! <3'})
+
+
+class AuthenticatedRenewDomainBasicUserActionView(AuthenticatedActionView):
+    html_url = '/confirm/renew-domain/{code}/'
+    serializer_class = serializers.AuthenticatedRenewDomainBasicUserActionSerializer
+
+    def finalize(self):
+        return Response({'detail': f'We recorded that your domain {self.action.domain} is still in use.'})
 
 
 class CaptchaView(generics.CreateAPIView):

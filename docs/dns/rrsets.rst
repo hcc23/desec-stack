@@ -25,6 +25,9 @@ that don't exist or you don't own, the API responds with a ``404 Not Found``
 status code.  For a quick overview of the available endpoints, methods, and
 operations, see :ref:`endpoint-reference`.
 
+All operations are subject to rate limiting.  For details, see
+:ref:`rate-limits`.
+
 
 .. _`RRset object`:
 
@@ -86,6 +89,12 @@ Field details:
 
     The maximum number of array elements is 4091, and the maximum length of
     the array is 64,000 (after JSON encoding).
+
+    Records must be given in presentation format (a.k.a. "BIND" or zone file
+    format). Record values that are not given in canonical form, such as
+    ``0:0000::1`` will be converted by the API into canonical form, e.g.
+    ``::1``. Exact validation and canonicalization depend on the record
+    type.
 
 ``subname``
     :Access mode: read, write-once (upon RRset creation)

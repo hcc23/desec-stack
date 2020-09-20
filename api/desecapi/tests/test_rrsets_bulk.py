@@ -136,8 +136,8 @@ class AuthenticatedRRSetBulkTestCase(AuthenticatedRRSetBaseTestCase):
                 {},
                 {'ttl': ['This field is required.']},
                 {'records': ['This field is required.']},
-                {'type': ['You cannot tinker with the SOA RRset.']},
-                {'type': ['You cannot tinker with the OPT RRset.']},
+                {'type': ['You cannot tinker with the SOA RR set. It is managed automatically.']},
+                {'type': ['You cannot tinker with the OPT RR set. It is managed automatically.']},
                 {'type': ['Generic type format is not supported.']},
             ]
         )
@@ -177,6 +177,9 @@ class AuthenticatedRRSetBulkTestCase(AuthenticatedRRSetBaseTestCase):
 
     def test_bulk_patch_does_accept_empty_list(self):
         response = self.client.bulk_patch_rr_sets(domain_name=self.my_empty_domain.name, payload=[])
+        self.assertStatus(response, status.HTTP_200_OK)
+
+        response = self.client.bulk_patch_rr_sets(domain_name=self.my_rr_set_domain.name, payload=[])
         self.assertStatus(response, status.HTTP_200_OK)
 
     def test_bulk_patch_does_not_accept_empty_payload(self):
@@ -327,6 +330,8 @@ class AuthenticatedRRSetBulkTestCase(AuthenticatedRRSetBaseTestCase):
 
     def test_bulk_put_does_accept_empty_list(self):
         response = self.client.bulk_put_rr_sets(domain_name=self.my_empty_domain.name, payload=[])
+        self.assertStatus(response, status.HTTP_200_OK)
+        response = self.client.bulk_put_rr_sets(domain_name=self.my_rr_set_domain.name, payload=[])
         self.assertStatus(response, status.HTTP_200_OK)
 
     def test_bulk_put_does_not_accept_empty_payload(self):

@@ -17,7 +17,8 @@ from rest_framework.reverse import reverse
 from rest_framework.test import APITestCase, APIClient
 from rest_framework.utils import json
 
-from desecapi.models import User, Domain, Token, RRset, RR, psl
+from desecapi.models import User, Domain, Token, RRset, RR, psl, RR_SET_TYPES_AUTOMATIC, RR_SET_TYPES_UNSUPPORTED, \
+    RR_SET_TYPES_MANAGEABLE
 
 
 class DesecAPIClient(APIClient):
@@ -170,13 +171,15 @@ class AssertRequestsContextManager:
     def _find_matching_request(pattern, requests):
         for request in requests:
             if pattern['method'] == request[0] and pattern['uri'].match(request[1]):
+                if pattern.get('payload') and pattern['payload'] not in request[2]:
+                    continue
                 return request
         return None
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         # organize seen requests in a primitive data structure
         seen_requests = [
-            (r.command, 'http://%s%s' % (r.headers['Host'], r.path)) for r in httpretty.latest_requests
+            (r.command, 'http://%s%s' % (r.headers['Host'], r.path), r.parsed_body) for r in httpretty.latest_requests
         ]
         httpretty.reset()
         hr_core.POTENTIAL_HTTP_PORTS.add(8081)  # FIXME should depend on self.expected_requests
@@ -289,13 +292,14 @@ class MockPDNSTestCase(APITestCase):
             return [x.rstrip('.') + '.' for x in arg]
 
     @classmethod
-    def request_pdns_zone_create(cls, ns):
+    def request_pdns_zone_create(cls, ns, **kwargs):
         return {
             'method': 'POST',
             'uri': cls.get_full_pdns_url(cls.PDNS_ZONES, ns=ns),
             'status': 201,
             'body': None,
             'match_querystring': True,
+            **kwargs
         }
 
     def request_pdns_zone_create_assert_name(self, ns, name):
@@ -339,38 +343,6 @@ class MockPDNSTestCase(APITestCase):
             'status': 200,
             'body': None,
         }
-
-    @classmethod
-    def request_pdns_zone_update_unknown_type(cls, name=None, unknown_types=None):
-        def request_callback(r, _, response_headers):
-            body = json.loads(r.parsed_body)
-            if not unknown_types or body['rrsets'][0]['type'] in unknown_types:
-                return [
-                    422, response_headers,
-                    json.dumps({'error': 'Mocked error. Unknown RR type %s.' % body['rrsets'][0]['type']})
-                ]
-            else:
-                return [200, response_headers, None]
-
-        request = cls.request_pdns_zone_update(name)
-        # noinspection PyTypeChecker
-        request['body'] = request_callback
-        request.pop('status')
-        return request
-
-    @classmethod
-    def request_pdns_zone_update_invalid_rr(cls, name=None):
-        def request_callback(r, _, response_headers):
-            return [
-                422, response_headers,
-                json.dumps({'error': 'Mocked error. Considering RR content invalid.'})
-            ]
-
-        request = cls.request_pdns_zone_update(name)
-        # noinspection PyTypeChecker
-        request['body'] = request_callback
-        request.pop('status')
-        return request
 
     def request_pdns_zone_update_assert_body(self, name: str = None, updated_rr_sets: Union[List[RRset], Dict] = None):
         if updated_rr_sets is None:
@@ -662,6 +634,9 @@ class DesecTestCase(MockPDNSTestCase):
     AUTO_DELEGATION_DOMAINS = settings.LOCAL_PUBLIC_SUFFIXES
     PUBLIC_SUFFIXES = {'de', 'com', 'io', 'gov.cd', 'edu.ec', 'xxx', 'pinb.gov.pl', 'valer.ostfold.no',
                        'kota.aichi.jp', 's3.amazonaws.com', 'wildcard.ck'}
+    SUPPORTED_RR_SET_TYPES = {'A', 'AAAA', 'AFSDB', 'CAA', 'CERT', 'CNAME', 'DHCID', 'DLV', 'DS', 'EUI48', 'EUI64',
+                              'HINFO', 'KX', 'LOC', 'MX', 'NAPTR', 'NS', 'OPENPGPKEY', 'PTR', 'RP', 'SPF', 'SRV',
+                              'SSHFP', 'TLSA', 'TXT', 'URI'}
 
     admin = None
     auto_delegation_domains = None
@@ -766,8 +741,9 @@ class DesecTestCase(MockPDNSTestCase):
 
     @classmethod
     def requests_desec_domain_creation(cls, name=None):
+        soa_content = 'set.an.example. get.desec.io. 1 86400 86400 2419200 3600'
         return [
-            cls.request_pdns_zone_create(ns='LORD'),
+            cls.request_pdns_zone_create(ns='LORD', payload=soa_content),
             cls.request_pdns_zone_create(ns='MASTER'),
             cls.request_pdns_update_catalog(),
             cls.request_pdns_zone_axfr(name=name),
@@ -775,28 +751,26 @@ class DesecTestCase(MockPDNSTestCase):
         ]
 
     @classmethod
-    def requests_desec_domain_deletion(cls, name=None):
-        return [
-            cls.request_pdns_zone_delete(name=name, ns='LORD'),
-            cls.request_pdns_zone_delete(name=name, ns='MASTER'),
+    def requests_desec_domain_deletion(cls, domain):
+        requests = [
+            cls.request_pdns_zone_delete(name=domain.name, ns='LORD'),
+            cls.request_pdns_zone_delete(name=domain.name, ns='MASTER'),
             cls.request_pdns_update_catalog(),
         ]
+
+        if domain.is_locally_registrable:
+            delegate_at = cls._find_auto_delegation_zone(domain.name)
+            requests += [
+                cls.request_pdns_zone_update(name=delegate_at),
+                cls.request_pdns_zone_axfr(name=delegate_at),
+            ]
+
+        return requests
 
     @classmethod
     def requests_desec_domain_creation_auto_delegation(cls, name=None):
         delegate_at = cls._find_auto_delegation_zone(name)
         return cls.requests_desec_domain_creation(name=name) + [
-            cls.request_pdns_zone_update(name=delegate_at),
-            cls.request_pdns_zone_axfr(name=delegate_at),
-        ]
-
-    @classmethod
-    def requests_desec_domain_deletion_auto_delegation(cls, name=None):
-        delegate_at = cls._find_auto_delegation_zone(name)
-        return [
-            cls.request_pdns_zone_delete(name=name, ns='LORD'),
-            cls.request_pdns_zone_delete(name=name, ns='MASTER'),
-            cls.request_pdns_update_catalog(),
             cls.request_pdns_zone_update(name=delegate_at),
             cls.request_pdns_zone_axfr(name=delegate_at),
         ]
@@ -855,8 +829,14 @@ class DesecTestCase(MockPDNSTestCase):
     def assertContains(self, response, text, count=None, status_code=200, msg_prefix='', html=False):
         # convenience method to check the status separately, which yields nicer error messages
         self.assertStatus(response, status_code)
+        # same for the substring check
+        self.assertIn(text, response.content.decode(response.charset),
+                      f'Could not find {text} in the following response:\n{response.content.decode(response.charset)}')
         return super().assertContains(response, text, count, status_code, msg_prefix, html)
 
+    def assertAllSupportedRRSetTypes(self, types):
+        self.assertEqual(types, self.SUPPORTED_RR_SET_TYPES, 'Either some RR types given are unsupported, or not all '
+                                                             'supported RR types were in the given set.')
 
 class PublicSuffixMockMixin():
     def _mock_get_public_suffix(self, domain_name, public_suffixes=None):
@@ -984,16 +964,9 @@ class DynDomainOwnerTestCase(DomainOwnerTestCase):
 
 
 class AuthenticatedRRSetBaseTestCase(DomainOwnerTestCase):
-    DEAD_TYPES = ['ALIAS', 'DNAME']
-    RESTRICTED_TYPES = ['SOA', 'RRSIG', 'DNSKEY', 'NSEC3PARAM', 'OPT']
-
-    # see https://doc.powerdns.com/md/types/
-    PDNS_RR_TYPES = ['A', 'AAAA', 'AFSDB', 'ALIAS', 'CAA', 'CERT', 'CDNSKEY', 'CDS', 'CNAME', 'DNSKEY', 'DNAME', 'DS',
-                     'HINFO', 'KEY', 'LOC', 'MX', 'NAPTR', 'NS', 'NSEC', 'NSEC3', 'NSEC3PARAM', 'OPENPGPKEY', 'PTR',
-                     'RP', 'RRSIG', 'SOA', 'SPF', 'SSHFP', 'SRV', 'TKEY', 'TSIG', 'TLSA', 'SMIMEA', 'TXT', 'URI']
-    ALLOWED_TYPES = ['A', 'AAAA', 'AFSDB', 'CAA', 'CERT', 'CDNSKEY', 'CDS', 'CNAME', 'DS', 'HINFO', 'KEY', 'LOC', 'MX',
-                     'NAPTR', 'NS', 'NSEC', 'NSEC3', 'OPENPGPKEY', 'PTR', 'RP', 'SPF', 'SSHFP', 'SRV', 'TKEY', 'TSIG',
-                     'TLSA', 'SMIMEA', 'TXT', 'URI']
+    UNSUPPORTED_TYPES = RR_SET_TYPES_UNSUPPORTED
+    AUTOMATIC_TYPES = RR_SET_TYPES_AUTOMATIC
+    ALLOWED_TYPES = RR_SET_TYPES_MANAGEABLE
 
     SUBNAMES = ['foo', 'bar.baz', 'q.w.e.r.t', '*', '*.foobar', '_', '-foo.test', '_bar']
 

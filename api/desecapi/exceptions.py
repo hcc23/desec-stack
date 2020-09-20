@@ -1,7 +1,5 @@
-import json
-
 from rest_framework import status
-from rest_framework.exceptions import APIException, ValidationError
+from rest_framework.exceptions import APIException
 
 
 class RequestEntityTooLarge(APIException):
@@ -10,22 +8,11 @@ class RequestEntityTooLarge(APIException):
     default_code = 'too_large'
 
 
-class PDNSValidationError(ValidationError):
-    pdns_code = 422
-
-    def __init__(self, response=None):
-        try:
-            detail = json.loads(response.text)['error']
-        except json.JSONDecodeError:
-            detail = response.text
-
-        return super().__init__(detail={'detail': detail}, code='invalid')
-
-
 class PDNSException(APIException):
     def __init__(self, response=None):
         self.response = response
-        return super().__init__(f'pdns response code: {response.status_code}, pdns response body: {response.text}')
+        detail = f'pdns response code: {response.status_code}, body: {response.text}' if response is not None else None
+        return super().__init__(detail)
 
 
 class ConcurrencyException(APIException):

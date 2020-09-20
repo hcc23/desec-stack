@@ -88,7 +88,34 @@
       </template>
     </v-app-bar>
 
-    <v-content>
+    <v-main>
+      <v-banner v-for="alert in $store.state.alerts" :key="alert.id">
+        <v-icon
+          slot="icon"
+          color="warning"
+          size="36"
+        >
+          {{ alert.icon }}
+        </v-icon>
+        {{ alert.teaser }}
+        <template v-slot:actions>
+          <v-btn
+            color="primary"
+            text
+            :href="alert.href"
+            v-if="alert.href"
+          >
+            {{ alert.button || 'More' }}
+          </v-btn>
+          <v-btn
+            color="primary"
+            text
+            @click="$store.commit('unalert', alert.id)"
+          >
+            Hide
+          </v-btn>
+        </template>
+      </v-banner>
       <v-progress-linear
               :active="$store.getters.working"
               :indeterminate="$store.getters.working"
@@ -97,7 +124,7 @@
               style="z-index: 3"
       ></v-progress-linear>
       <router-view/>
-    </v-content>
+    </v-main>
     <v-footer
       class="d-flex flex-column align-stretch pa-0 white--text text--darken-1 elevation-12"
     >
@@ -107,6 +134,7 @@
         </div>
         <div class="d-sm-flex flex-row align-right py-2">
           <div class="px-2 grey--text text--darken-1">powered by <a class="grey--text" href="//securesystems.de/" style="text-decoration: none">SSE</a></div>
+          <div class="px-2"><a href="//desec-status.net/">Service Status</a></div>
           <div class="px-2"><a href="//github.com/desec-io/desec-stack/">Source Code</a></div>
           <div class="px-2"><router-link :to="{name: 'terms'}">Terms of Use</router-link></div>
           <div class="px-2"><router-link :to="{name: 'privacy-policy'}">Privacy Policy (Datenschutzerklärung)</router-link></div>

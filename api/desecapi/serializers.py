@@ -4,7 +4,9 @@ import re
 from base64 import urlsafe_b64decode, urlsafe_b64encode, b64encode
 
 from captcha.image import ImageCaptcha
+from django.contrib.auth.models import AnonymousUser
 from django.contrib.auth.password_validation import validate_password
+import django.core.exceptions
 from django.core.validators import MinValueValidator
 from django.db import IntegrityError, OperationalError
 from django.db.models import Model, Q
@@ -244,12 +246,15 @@ class RRsetSerializer(ConditionalExistenceModelSerializer):
 
     @staticmethod
     def validate_type(value):
-        if value in models.RRset.DEAD_TYPES:
-            raise serializers.ValidationError(f'The {value} RRset type is currently unsupported.')
-        if value in models.RRset.RESTRICTED_TYPES:
-            raise serializers.ValidationError(f'You cannot tinker with the {value} RRset.')
-        if value.startswith('TYPE'):
-            raise serializers.ValidationError('Generic type format is not supported.')
+        if value not in models.RR_SET_TYPES_MANAGEABLE:
+            # user cannot manage this type, let's try to tell her the reason
+            if value in models.RR_SET_TYPES_AUTOMATIC:
+                raise serializers.ValidationError(f'You cannot tinker with the {value} RR set. It is managed '
+                                                  f'automatically.')
+            elif value.startswith('TYPE'):
+                raise serializers.ValidationError('Generic type format is not supported.')
+            else:
+                raise serializers.ValidationError(f'The {value} RR set type is currently unsupported.')
         return value
 
     def validate_records(self, value):
@@ -316,27 +321,14 @@ class RRsetSerializer(ConditionalExistenceModelSerializer):
         """
         Updates this RR set's resource records, discarding any old values.
 
-        To do so, two large select queries and one query per changed (added or removed) resource record are needed.
-
-        Changes are saved to the database immediately.
-
         :param rrset: the RRset at which we overwrite all RRs
         :param rrs: list of RR representations
         """
         record_contents = [rr['content'] for rr in rrs]
-
-        # Remove RRs that we didn't see in the new list
-        removed_rrs = rrset.records.exclude(content__in=record_contents)  # one SELECT
-        for rr in removed_rrs:
-            rr.delete()  # one DELETE query
-
-        # Figure out which entries in record_contents have not changed
-        unchanged_rrs = rrset.records.filter(content__in=record_contents)  # one SELECT
-        unchanged_content = [unchanged_rr.content for unchanged_rr in unchanged_rrs]
-        added_content = filter(lambda c: c not in unchanged_content, record_contents)
-
-        rrs = [models.RR(rrset=rrset, content=content) for content in added_content]
-        models.RR.objects.bulk_create(rrs)  # One INSERT
+        try:
+            rrset.save_records(record_contents)
+        except django.core.exceptions.ValidationError as e:
+            raise serializers.ValidationError(e.messages, code='record-content')
 
 
 class RRsetListSerializer(serializers.ListSerializer):
@@ -446,7 +438,7 @@ class RRsetListSerializer(serializers.ListSerializer):
         def is_empty(data_item):
             return data_item.get('records', None) == []
 
-        query = Q()
+        query = Q(pk__in=[])  # start out with an always empty query, see https://stackoverflow.com/q/35893867/6867099
         for item in validated_data:
             query |= Q(type=item['type'], subname=item['subname'])  # validation has ensured these fields exist
         instance = instance.filter(query)
@@ -456,7 +448,7 @@ class RRsetListSerializer(serializers.ListSerializer):
 
         if data_index.keys() | instance_index.keys() != data_index.keys():
             raise ValueError('Given set of known RRsets (`instance`) is not a subset of RRsets referred to in'
-                             '`validated_data`. While this would produce a correct result, this is illegal due to its'
+                             ' `validated_data`. While this would produce a correct result, this is illegal due to its'
                              ' inefficiency.')
 
         everything = instance_index.keys() | data_index.keys()
@@ -491,14 +483,9 @@ class RRsetListSerializer(serializers.ListSerializer):
 
         # time of check (does it exist?) and time of action (create vs update) are different,
         # so for parallel requests, we can get integrity errors due to duplicate keys.
-        # This will be considered a 429-error, even though re-sending the request will be successful.
+        # We knew how to handle this with MySQL, but after switching for Postgres, we don't.
+        # Re-raise it so we get an email based on which we can learn and improve error handling.
         except OperationalError as e:
-            try:
-                if e.args[0] == 1213:
-                    # 1213 is mysql for deadlock, other OperationalErrors are treated elsewhere or not treated at all
-                    raise ConcurrencyException from e
-            except (AttributeError, KeyError):
-                pass
             raise e
         except (IntegrityError, models.RRset.DoesNotExist) as e:
             raise ConcurrencyException from e
@@ -537,9 +524,10 @@ class DomainSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def raise_if_domain_unavailable(domain_name: str, user: models.User):
-        if not models.Domain.is_registrable(domain_name, user):
+        user = user if not isinstance(user, AnonymousUser) else None
+        if not models.Domain(name=domain_name, owner=user).is_registrable():
             raise serializers.ValidationError(
-                'This domain name is unavailable because it is already taken, or disallowed by policy.',
+                'This domain name conflicts with an existing zone, or is disallowed by policy.',
                 code='name_unavailable'
             )
 
@@ -686,7 +674,10 @@ class AuthenticatedActionSerializer(serializers.ModelSerializer):
         except KeyError:
             raise serializers.ValidationError({'code': ['This field is required.']})
         except ValueError:
-            raise serializers.ValidationError({'code': ['Invalid code.']})
+            validity = settings.VALIDITY_PERIOD_VERIFICATION_SIGNATURE
+            raise serializers.ValidationError({
+                'code': [f'This code is invalid, most likely because it expired (validity: {validity}).']
+            })
 
         # add extra fields added by the user
         unpacked_data.update(**data)
@@ -702,7 +693,7 @@ class AuthenticatedActionSerializer(serializers.ModelSerializer):
         raise ValueError
 
 
-class AuthenticatedUserActionSerializer(AuthenticatedActionSerializer):
+class AuthenticatedBasicUserActionSerializer(AuthenticatedActionSerializer):
     user = serializers.PrimaryKeyRelatedField(
         queryset=models.User.objects.all(),
         error_messages={'does_not_exist': 'This user does not exist.'},
@@ -710,21 +701,21 @@ class AuthenticatedUserActionSerializer(AuthenticatedActionSerializer):
     )
 
     class Meta:
-        model = models.AuthenticatedUserAction
+        model = models.AuthenticatedBasicUserAction
         fields = AuthenticatedActionSerializer.Meta.fields + ('user',)
 
 
-class AuthenticatedActivateUserActionSerializer(AuthenticatedUserActionSerializer):
+class AuthenticatedActivateUserActionSerializer(AuthenticatedBasicUserActionSerializer):
 
-    class Meta(AuthenticatedUserActionSerializer.Meta):
+    class Meta(AuthenticatedBasicUserActionSerializer.Meta):
         model = models.AuthenticatedActivateUserAction
-        fields = AuthenticatedUserActionSerializer.Meta.fields + ('domain',)
+        fields = AuthenticatedBasicUserActionSerializer.Meta.fields + ('domain',)
         extra_kwargs = {
             'domain': {'default': None, 'allow_null': True}
         }
 
 
-class AuthenticatedChangeEmailUserActionSerializer(AuthenticatedUserActionSerializer):
+class AuthenticatedChangeEmailUserActionSerializer(AuthenticatedBasicUserActionSerializer):
     new_email = serializers.EmailField(
         validators=[
             CustomFieldNameUniqueValidator(
@@ -736,20 +727,37 @@ class AuthenticatedChangeEmailUserActionSerializer(AuthenticatedUserActionSerial
         required=True,
     )
 
-    class Meta(AuthenticatedUserActionSerializer.Meta):
+    class Meta(AuthenticatedBasicUserActionSerializer.Meta):
         model = models.AuthenticatedChangeEmailUserAction
-        fields = AuthenticatedUserActionSerializer.Meta.fields + ('new_email',)
+        fields = AuthenticatedBasicUserActionSerializer.Meta.fields + ('new_email',)
 
 
-class AuthenticatedResetPasswordUserActionSerializer(AuthenticatedUserActionSerializer):
+class AuthenticatedResetPasswordUserActionSerializer(AuthenticatedBasicUserActionSerializer):
     new_password = serializers.CharField(write_only=True)
 
-    class Meta(AuthenticatedUserActionSerializer.Meta):
+    class Meta(AuthenticatedBasicUserActionSerializer.Meta):
         model = models.AuthenticatedResetPasswordUserAction
-        fields = AuthenticatedUserActionSerializer.Meta.fields + ('new_password',)
+        fields = AuthenticatedBasicUserActionSerializer.Meta.fields + ('new_password',)
 
 
-class AuthenticatedDeleteUserActionSerializer(AuthenticatedUserActionSerializer):
+class AuthenticatedDeleteUserActionSerializer(AuthenticatedBasicUserActionSerializer):
 
-    class Meta(AuthenticatedUserActionSerializer.Meta):
+    class Meta(AuthenticatedBasicUserActionSerializer.Meta):
         model = models.AuthenticatedDeleteUserAction
+
+
+class AuthenticatedDomainBasicUserActionSerializer(AuthenticatedBasicUserActionSerializer):
+    domain = serializers.PrimaryKeyRelatedField(
+        queryset=models.Domain.objects.all(),
+        error_messages={'does_not_exist': 'This domain does not exist.'},
+    )
+
+    class Meta:
+        model = models.AuthenticatedDomainBasicUserAction
+        fields = AuthenticatedBasicUserActionSerializer.Meta.fields + ('domain',)
+
+
+class AuthenticatedRenewDomainBasicUserActionSerializer(AuthenticatedDomainBasicUserActionSerializer):
+
+    class Meta(AuthenticatedDomainBasicUserActionSerializer.Meta):
+        model = models.AuthenticatedRenewDomainBasicUserAction

@@ -62,21 +62,12 @@ WSGI_APPLICATION = 'desecapi.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django_prometheus.db.backends.mysql',
+        'ENGINE': 'django_prometheus.db.backends.postgresql',
         'NAME': 'desec',
         'USER': 'desec',
         'PASSWORD': os.environ['DESECSTACK_DBAPI_PASSWORD_desec'],
         'HOST': 'dbapi',
-        'OPTIONS': {
-            'charset': 'utf8mb4',
-            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-        },
-        'TEST': {
-            'CHARSET': 'utf8mb4',
-            'COLLATION': 'utf8mb4_bin',
-        },
     },
-
 }
 
 CACHES = {
@@ -112,13 +103,13 @@ REST_FRAMEWORK = {
         'desecapi.throttling.ScopedRatesThrottle',
         'rest_framework.throttling.UserRateThrottle',
     ],
-    'DEFAULT_THROTTLE_RATES': {
+    'DEFAULT_THROTTLE_RATES': {  # When changing rate limits, make sure to keep docs/rate-limits.rst consistent
         # ScopedRatesThrottle
         'account_management_active': ['3/min'],  # things with side effect, e.g. sending mail or zone creation on signup
         'account_management_passive': ['10/min'],  # things like GET'ing v/* or auth/* URLs, or creating/deleting tokens
         'dyndns': ['1/min'],  # dynDNS updates; anything above 1/min is a client misconfiguration
-        'dns_api_read': ['5/s', '50/min'],  # DNS API requests that do not involve pdns
-        'dns_api_write': ['3/s', '50/min', '200/h'],  # DNS API requests that do involve pdns
+        'dns_api_read': ['10/s', '50/min'],  # DNS API requests that do not involve pdns
+        'dns_api_write': ['6/s', '50/min', '200/h'],  # DNS API requests that do involve pdns
         # UserRateThrottle
         'user': '1000/d',  # hard limit on requests by a) an authenticated user, b) an unauthenticated IP address
     },
@@ -182,6 +173,7 @@ CELERY_TASK_TIME_LIMIT = 30
 TASK_CONFIG = {  # The first entry is the default queue
     'email_slow_lane': {'rate_limit': '3/m'},
     'email_fast_lane': {'rate_limit': '1/s'},
+    'email_immediate_lane': {'rate_limit': None},
 }
 
 # pdns accepts request payloads of this size.

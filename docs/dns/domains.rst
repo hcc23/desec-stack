@@ -5,8 +5,10 @@ Domain Management
 
 Domain management is done through the ``/api/v1/domains/`` endpoint.  The
 following sections describe how to create, list, modify, and delete domains
-using JSON objects.  The structure of the JSON objects is detailed in the next
-section.
+using JSON objects.
+
+All operations are subject to rate limiting.  For details, see
+:ref:`rate-limits`.
 
 
 .. _`domain object`:
@@ -85,6 +87,10 @@ Field details:
     characters as well as hyphens ``-`` and underscores ``_`` (except at the
     beginning of the name).  The maximum length is 191.
 
+    Internationalized domain names (IDN) currently are supported through their
+    Punycode representation only (labels beginning with ``xn--``).  Converters
+    are available on the net, for example at https://www.punycoder.com/.
+
 ``published``
     :Access mode: read-only
 
@@ -123,16 +129,18 @@ Only the ``name`` field is mandatory.
 Upon success, the response status code will be ``201 Created``, with the
 domain object contained in the response body.  If an improper request was
 sent, ``400 Bad Request`` is returned.  This can happen when the request
-payload was malformed, or when the requested domain name is unavailable or
-invalid (e.g. because another user owns it, or due to policy reasons).
+payload was malformed, or when the requested domain name is unavailable
+(because it conflicts with another user's zone) or invalid (due to policy, see
+below).
 
 If you have reached the maximum number of domains for your account, the API
 responds with ``403 Forbidden``.
 
 Restrictions on what is a valid domain name apply.  In particular, domains
-listed on the `Public Suffix List`_ cannot be registered.  (If you operate a
-public suffix and would like to host it with deSEC, that's certainly possible;
-please contact our support.)
+listed on the `Public Suffix List`_ such as ``co.uk`` cannot be registered.
+(If you operate a public suffix and would like to host it with deSEC, that's
+certainly possible; please contact support.) Also, domains ending with
+``.internal`` cannot be registered.
 
 .. _Public Suffix List: https://publicsuffix.org/
 
